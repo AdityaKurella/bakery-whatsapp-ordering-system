@@ -1,0 +1,38 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "1",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "phone_number_id": "999999999999999"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Test Customer"
+                },
+                "wa_id": "919800000001"
+              }
+            ],
+            "messages": [
+              {
+                "from": "919800000001",
+                "id": "wamid.TESTEEEEEEEEEEEE5=",
+                "timestamp": "1790000000",
+                "type": "text",
+                "text": {
+                  "body": "hi"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

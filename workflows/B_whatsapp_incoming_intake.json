@@ -1,0 +1,339 @@
+{
+  "name": "B - WhatsApp Incoming Message Intake (POST)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-bakery",
+        "authentication": "none",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "767e29b4-e1ee-5365-b11c-125f40a784dd",
+      "name": "Meta Webhook POST",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        240
+      ],
+      "webhookId": "67b49e72-f87d-52e3-b4fc-ab49af017539"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow B - Verify X-Hub-Signature-256 over the EXACT raw request body (Webhook option \"Raw Body\" = on).\n// Fails closed: if crypto is not allowed, the secret is missing, or the raw body is unavailable, the request is rejected.\nconst item = $input.first();\nconst headers = (item.json && item.json.headers) || {};\nconst sigHeader = String(headers['x-hub-signature-256'] || '');\nconst MAX_BYTES = 262144;\nlet reason = null, payload = null;\ntry {\n  const crypto = require('crypto');\n  const secret = String($env.META_APP_SECRET || '');\n  if (secret.length < 16) throw new Error('META_APP_SECRET not configured');\n  const keys = Object.keys(item.binary || {});\n  if (!keys.length) throw new Error('raw body not available (enable Raw Body on the Webhook node)');\n  const buf = await this.helpers.getBinaryDataBuffer(0, keys[0]);\n  if (buf.length > MAX_BYTES) {\n    reason = 'too_large';\n  } else {\n    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(buf).digest('hex');\n    const a = Buffer.from(sigHeader, 'utf8'), b = Buffer.from(expected, 'utf8');\n    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) reason = 'bad_signature';\n    else payload = JSON.parse(buf.toString('utf8'));   // we process the same bytes we verified\n  }\n} catch (e) {\n  reason = 'verify_error: ' + String(e && e.message ? e.message : e).slice(0, 100);\n}\nreturn [{ json: { valid: reason === null, reason, payload } }];\n"
+      },
+      "id": "ed36d221-fb0e-54d9-95a8-b342b098b9ec",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "17a29e86-c574-51ab-bdda-c9ffc2552c0e",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "73737f3b-487e-5fbf-afbe-3e5c32ff1843",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": {
+          "responseCode": 403,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "1df1f191-9d1d-58d3-b275-4f71b87676b9",
+      "name": "Respond Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        780,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow B - turn a verified Meta payload into minimal normalized events. Status events never become orders.\nconst p = ($input.first().json || {}).payload || {};\nconst PNID = String($env.META_PHONE_NUMBER_ID || '');\nconst events = [];\nconst clean = (s, n) => String(s == null ? '' : s).replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g, '').slice(0, n);\nconst idOk = (s) => typeof s === 'string' && /^[A-Za-z0-9=_.\\-]{8,200}$/.test(s);\nconst waOk = (s) => typeof s === 'string' && /^[0-9]{6,20}$/.test(s);\nlet ignored = 0;\nif (p.object === 'whatsapp_business_account' && Array.isArray(p.entry)) {\n  for (const entry of p.entry) {\n    for (const ch of (entry && Array.isArray(entry.changes) ? entry.changes : [])) {\n      const v = ch && ch.value;\n      if (!v || ch.field !== 'messages') { ignored++; continue; }\n      if (PNID && String(v.metadata && v.metadata.phone_number_id) !== PNID) { ignored++; continue; }   // other numbers are ignored\n      const names = {};\n      for (const c of (Array.isArray(v.contacts) ? v.contacts : [])) if (c && waOk(c.wa_id)) names[c.wa_id] = clean(c.profile && c.profile.name, 100);\n      for (const m of (Array.isArray(v.messages) ? v.messages : [])) {\n        if (!m || !idOk(m.id) || !waOk(m.from)) { ignored++; continue; }\n        const type = clean(m.type, 30) || 'unknown';\n        const pl = { name: names[m.from] || '', type, text: '', interactive_id: '', interactive_title: '' };\n        if (type === 'text' && m.text) pl.text = clean(m.text.body, 1000);\n        else if (type === 'interactive' && m.interactive) {\n          const r = m.interactive.button_reply || m.interactive.list_reply || {};\n          pl.interactive_id = clean(r.id, 200); pl.interactive_title = clean(r.title, 100);\n        } else if (type === 'button' && m.button) { pl.interactive_id = clean(m.button.payload, 200); pl.text = clean(m.button.text, 200); }\n        events.push({ kind: 'MESSAGE', event_key: m.id, wa_id: m.from, msg_type: type, event_ts: String(m.timestamp || ''), payload: pl });\n      }\n      for (const s of (Array.isArray(v.statuses) ? v.statuses : [])) {\n        if (!s || !idOk(s.id) || !waOk(s.recipient_id)) { ignored++; continue; }\n        const st = clean(s.status, 20);\n        const err = Array.isArray(s.errors) && s.errors[0] ? clean(s.errors[0].code, 20) + ':' + clean(s.errors[0].title, 120) : '';\n        events.push({ kind: 'STATUS', event_key: s.id + ':' + st, wa_id: s.recipient_id, msg_type: 'status', event_ts: String(s.timestamp || ''), payload: { message_id: s.id, status: st, error: err } });\n      }\n    }\n  }\n}\nreturn [{ json: { events, count: events.length, ignored } }];\n"
+      },
+      "id": "470b6397-8874-5290-9d95-9b01b61ccc74",
+      "name": "Normalize Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bakery.fn_enqueue_events($1::jsonb) AS r",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json.events) ] }}"
+        }
+      },
+      "id": "872203f7-5ab2-5543-bcd2-97e7221093a0",
+      "name": "Enqueue Events",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1040,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Service Unavailable",
+        "options": {
+          "responseCode": 503,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "94bb29ad-f683-5e39-933a-56fe63a5876f",
+      "name": "Respond Retry Later",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1300,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "33c46ef0-e6dd-543e-8d4b-523d09ddec83",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1300,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow B - one item per newly stored inbound message event (duplicates were already dropped by the database).\nconst r = ($('Enqueue Events').first().json || {}).r || {};\nreturn (Array.isArray(r.new_event_ids) ? r.new_event_ids : []).filter(n => Number.isInteger(n)).map(n => ({ json: { event_id: n } }));\n"
+      },
+      "id": "1bed0cb9-57ae-5c21-9829-f7d314522d9a",
+      "name": "Fan Out Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_WORKFLOW_C_ID"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "686e70ae-5752-5a40-a261-4049610b4ea2",
+      "name": "Process Event (Workflow C)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1820,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Workflow B: POST intake**\nOrder of operations: verify HMAC on raw body -> store events durably (idempotent) -> ACK 200 -> process.\nIf the database write fails we answer 503 so Meta redelivers.\nRequires n8n env: META_APP_SECRET, META_PHONE_NUMBER_ID, NODE_FUNCTION_ALLOW_BUILTIN=crypto, N8N_BLOCK_ENV_ACCESS_IN_NODE=false.\nSET the 'Process Event' node to Workflow C (placeholder REPLACE_WITH_WORKFLOW_C_ID).\nCredential: 'Bakery Postgres'.",
+        "height": 260,
+        "width": 560
+      },
+      "id": "3ad13c89-43fb-5349-9cdf-33be2cb8ebe9",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -140
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Meta Webhook POST": {
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Signature": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Normalize Events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Events": {
+      "main": [
+        [
+          {
+            "node": "Enqueue Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enqueue Events": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Retry Later",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond OK": {
+      "main": [
+        [
+          {
+            "node": "Fan Out Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan Out Events": {
+      "main": [
+        [
+          {
+            "node": "Process Event (Workflow C)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true
+  },
+  "tags": []
+}

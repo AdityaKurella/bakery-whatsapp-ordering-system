@@ -1,0 +1,519 @@
+{
+  "name": "D - Order Notifications and Status Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "7fba7ee9-3135-5c4b-939b-50601f85e939",
+      "name": "Dispatch Now (called by C)",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "731d0245-1783-5a1f-9b3b-cad6b8d11a90",
+      "name": "Every Minute (safety net)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "bakery-order-status",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "4571ef86-e4e0-5a90-b4aa-ff7cbaa7bf8f",
+      "name": "Staff Status Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        520
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Bakery Staff Webhook Key"
+        }
+      },
+      "webhookId": "d2a03807-437f-569d-84de-8005c4f4b5c9"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow D - validate a staff status-update request (Header Auth already enforced by the Webhook node).\nconst b = ($input.first().json || {}).body || {};\nconst STATUS = ['PREPARING', 'READY', 'OUT_FOR_DELIVERY', 'COMPLETED', 'CANCELLED'];\nconst PAY = ['PAID', 'FAILED', 'REFUNDED', 'PAYMENT_PENDING'];\nconst ref = String(b.order_ref || '').trim().toUpperCase();\nconst status = String(b.status || '').trim().toUpperCase();\nconst pay = String(b.payment_status || '').trim().toUpperCase();\nconst actor = String(b.actor || 'staff').replace(/[^\\w .@-]/g, '').slice(0, 60) || 'staff';\nconst note = String(b.note || '').replace(/[\\u0000-\\u001F\\u007F]/g, ' ').slice(0, 200);\nlet error = null;\nif (!/^BK-\\d{6}-\\d{5}-[A-Z0-9]{3}$/.test(ref)) error = 'invalid order_ref';\nelse if ((status && pay) || (!status && !pay)) error = 'send exactly one of status or payment_status';\nelse if (status && !STATUS.includes(status)) error = 'invalid status';\nelse if (pay && !PAY.includes(pay)) error = 'invalid payment_status';\nreturn [{ json: { valid: !error, error, order_ref: ref, status, payment_status: pay, actor, note } }];\n"
+      },
+      "id": "fe2f3503-57d5-5797-9c75-07e518f620f4",
+      "name": "Validate Staff Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d21f9050-3365-5622-acbb-9a6ec46a876a",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e1ffec3a-ad32-5b5f-8b1a-6182318d62da",
+      "name": "Staff Request Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { ok: false, error: $json.error } }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "bdfe0c31-d232-584c-b7d1-40885976d7c2",
+      "name": "Respond Staff Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        780,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CASE WHEN $3::text <> '' THEN bakery.fn_set_payment_status($1::text, $3::text, $4::text, $5::text) ELSE bakery.fn_set_order_status($1::text, $2::text, $4::text, $5::text) END AS r",
+        "options": {
+          "queryReplacement": "={{ [ $json.order_ref, $json.status, $json.payment_status, $json.actor, $json.note ] }}"
+        }
+      },
+      "id": "3fe03df4-ff34-513d-8941-479481dfd7f7",
+      "name": "Apply Order Update",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        780,
+        520
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.r }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a654e400-8357-517a-ad78-482eed8e7738",
+      "name": "Respond Staff Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1040,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bakery.fn_get_settings() AS settings",
+        "options": {}
+      },
+      "id": "41d3dd46-2609-5779-804e-757ab071c022",
+      "name": "Load Settings",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1300,
+        240
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bakery.fn_outbox_claim(10) AS item",
+        "options": {}
+      },
+      "id": "72bb6cb0-f8ac-55fb-9235-dc3c6ef2f885",
+      "name": "Claim Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1540,
+        240
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow D - turn claimed outbox rows into Cloud API request bodies. The recipient always comes from the database row.\nconst S = ($('Load Settings').first().json || {}).settings || {};\n// ---- shared helpers (inlined by tools/build_workflows.py at //@@LIB@@) ----\nconst CUR = String(S.currency_symbol || S.currency_code || '');\nfunction fmt(minor) {\n  const n = Number(minor) || 0, a = Math.abs(n), whole = Math.floor(a / 100), frac = a % 100;\n  return (n < 0 ? '-' : '') + CUR + String(whole).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',') + (frac ? '.' + String(frac).padStart(2, '0') : '');\n}\nfunction clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }\nfunction plain(s, n) { return clip(String(s == null ? '' : s).replace(/[\\u0000-\\u001F\\u007F]/g, ' ').replace(/\\s+/g, ' ').trim(), n); }\nconst STATUS_LABEL = { CONFIRMED: 'Confirmed', PREPARING: 'Being prepared', READY: 'Ready', OUT_FOR_DELIVERY: 'Out for delivery', COMPLETED: 'Completed', CANCELLED: 'Cancelled' };\nconst PAY_LABEL = { PAYMENT_PENDING: 'payment pending', PAID: 'paid', FAILED: 'payment failed', REFUNDED: 'refunded' };\nfunction optsText(o) {\n  if (!o || typeof o !== 'object') return '';\n  const parts = [o.flavor, o.egg, o.frosting].filter(Boolean);\n  let t = parts.join(', ');\n  if (o.message) t += (t ? '; ' : '') + 'message: “' + plain(o.message, 60) + '”';\n  return t ? ' [' + t + ']' : '';\n}\nfunction leadText(m) {\n  m = Number(m) || 0;\n  if (m < 120) return m + ' minutes';\n  if (m < 2880) return Math.ceil(m / 60) + ' hours';\n  return Math.ceil(m / 1440) + ' days';\n}\nfunction hoursText() {\n  const H = S.opening_hours || {}, names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], groups = [];\n  for (let i = 1; i <= 7; i++) {\n    const h = H[String(i)], key = Array.isArray(h) ? h.join('-') : 'closed', last = groups[groups.length - 1];\n    if (last && last.key === key) last.to = names[i - 1]; else groups.push({ key, from: names[i - 1], to: names[i - 1] });\n  }\n  return groups.map(g => (g.from === g.to ? g.from : g.from + '–' + g.to) + ' ' + g.key.replace('-', '–')).join(', ');\n}\nfunction lineText(l) {\n  return l.line_no + '. ' + l.name + ' (' + l.variant + ') × ' + l.quantity + ' — ' + fmt(l.line_total_minor) + optsText(l.options);\n}\nfunction totalsText(c) {\n  let t = 'Subtotal: ' + fmt(c.subtotal_minor);\n  if (Number(c.delivery_fee_minor) > 0) t += '\\nDelivery: ' + fmt(c.delivery_fee_minor);\n  if (Number(c.tax_minor) > 0) t += '\\nTax: ' + fmt(c.tax_minor);\n  return t + '\\n*Total: ' + fmt(c.total_minor) + '*';\n}\nfunction whenText(c) {\n  const m = c.fulfillment_method === 'DELIVERY' ? 'Delivery' : 'Pickup';\n  return m + ' — ' + (c.requested_local || 'time not set');\n}\n\nconst ver = String($env.WHATSAPP_API_VERSION || ''), pnid = String($env.META_PHONE_NUMBER_ID || '');\nconst configOk = /^v\\d{1,2}\\.\\d{1,2}$/.test(ver) && /^\\d{5,25}$/.test(pnid);\nconst url = configOk ? 'https://graph.facebook.com/' + ver + '/' + pnid + '/messages' : '';\nconst one = (s, n) => plain(s, n).replace(/\\s{2,}/g, ' ');\nfunction orderItems(o) {\n  return (o.items || []).map(i => '• ' + i.quantity + ' × ' + one(i.name, 60) + ' (' + one(i.variant, 20) + ')' + optsText(i.options)).join('\\n');\n}\nfunction orderHead(o) { return (o.fulfillment_method === 'DELIVERY' ? 'Delivery' : 'Pickup') + ': ' + o.requested_local; }\nfunction build(row) {\n  const o = row.order || {};\n  switch (row.kind) {\n    case 'ORDER_CONFIRMED_CUSTOMER':\n      return '✅ *Order confirmed!*\\nReference: *' + o.order_ref + '*\\n\\n' + orderItems(o) + '\\n\\n' + orderHead(o) + (o.fulfillment_method === 'DELIVERY' ? '\\nAddress: ' + one(o.delivery_address, 200) : '') +\n        '\\nTotal: *' + fmt(o.total_minor) + '*\\nPayment: ' + (PAY_LABEL[o.payment_status] || o.payment_status) + '. ' + (S.payment_instructions || '') + '\\n\\nSay “status” to check your order, or “cancel my order” if you change your mind (subject to our cancellation rules).';\n    case 'ORDER_NEW_BAKERY':\n      return '🧾 *New order ' + o.order_ref + '*\\nCustomer: ' + one(o.contact_name, 60) + ' (+' + o.contact_wa_id + ')\\n\\n' + orderItems(o) + '\\n\\n' + orderHead(o) + (o.fulfillment_method === 'DELIVERY' ? '\\nAddress: ' + one(o.delivery_address, 200) : '') +\n        '\\nTotal: ' + fmt(o.total_minor) + ' · ' + (PAY_LABEL[o.payment_status] || o.payment_status);\n    case 'ORDER_CANCELLED_BAKERY':\n      return '❌ *Order cancelled by customer:* ' + o.order_ref + '\\n' + one(o.contact_name, 60) + ' (+' + o.contact_wa_id + ')\\n' + orderHead(o) + '\\nTotal: ' + fmt(o.total_minor);\n    case 'ORDER_STATUS_CUSTOMER': {\n      const st = (row.payload || {}).status, note = (row.payload || {}).note;\n      const msg = { PREPARING: 'We have started preparing it 🧁', READY: 'It is ready for ' + (o.fulfillment_method === 'DELIVERY' ? 'dispatch' : 'pickup') + ' 🎉', OUT_FOR_DELIVERY: 'It is out for delivery 🚚', COMPLETED: 'It is complete. Thank you! 💛', CANCELLED: 'It has been cancelled.' }[st] || 'Its status is now ' + (STATUS_LABEL[st] || st) + '.';\n      return 'Update on order *' + o.order_ref + '*: ' + msg + (note ? '\\n' + one(note, 200) : '');\n    }\n  }\n  return '';\n}\nfunction tpl(t, row, text) {\n  if (!t || !t.name || t.name === 'REPLACE_WITH_TEMPLATE_NAME') return null;\n  const o = row.order || {};\n  const vals = { order_ref: o.order_ref || '', summary: one((o.items || []).map(i => i.quantity + ' x ' + i.name).join(', '), 400), total: o.total_minor !== undefined ? fmt(o.total_minor) : '' };\n  const params = (Array.isArray(t.params) ? t.params : []).map(k => ({ type: 'text', text: one(vals[k] || '-', 500) }));\n  const template = { name: String(t.name), language: { code: String(t.language || 'en_US') } };\n  if (params.length) template.components = [{ type: 'body', parameters: params }];\n  return { type: 'template', template };\n}\nconst out = [];\nfor (const it of $input.all()) {\n  const row = it.json.item;\n  const base = { id: row.id, send: false, outcome: null, code: null, text: null, provider_id: null, url, body: null };\n  if (!configOk) { out.push({ json: Object.assign(base, { outcome: 'PERMANENT', code: 'CONFIG', text: 'WHATSAPP_API_VERSION or META_PHONE_NUMBER_ID missing/invalid' }) }); continue; }\n  let msg = null;\n  if (row.kind === 'REPLY') {\n    const p = row.payload || {};\n    if (row.window_open && p.message) msg = (row.last_error_code === 'INTERACTIVE_REJECTED' && p.fallback_text) ? { type: 'text', text: { body: clip(p.fallback_text, 4000), preview_url: false } } : p.message;\n  } else {\n    const text = build(row);\n    if (!text) { out.push({ json: Object.assign(base, { outcome: 'PERMANENT', code: 'NO_TEMPLATE', text: 'unknown notification kind or missing order' }) }); continue; }\n    if (row.window_open) msg = { type: 'text', text: { body: clip(text, 4000), preview_url: false } };\n    else msg = tpl(row.recipient_type === 'BAKERY' ? S.bakery_notify_template : S.customer_status_template, row, text);\n  }\n  if (!msg) { out.push({ json: Object.assign(base, { outcome: 'BLOCKED_WINDOW', code: '131047', text: 'outside 24h window and no approved template configured' }) }); continue; }\n  out.push({ json: Object.assign(base, { send: true, body: Object.assign({ messaging_product: 'whatsapp', recipient_type: 'individual', to: row.recipient_wa_id }, msg) }) });\n}\nreturn out;\n"
+      },
+      "id": "b4a3bd73-da97-523f-a4fe-42d4d3a79932",
+      "name": "Render Outbox",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dfcf3935-9854-5994-a718-4e40514f138e",
+              "leftValue": "={{ $json.send }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d763754a-d64f-57d4-ab55-2eee0d537b16",
+      "name": "Can Send?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2020,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 150
+            }
+          }
+        }
+      },
+      "id": "efa24c8b-d99b-5df2-ad82-62e48e668f08",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2260,
+        160
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "WhatsApp Cloud Bearer"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow D - classify the WhatsApp Cloud API response. Retry only what is safe to retry.\nconst sent = $('Can Send?').all(0);          // items that went into the HTTP node, same order\nconst mask = (s) => String(s == null ? '' : s).replace(/\\d{7,}/g, '[n]').replace(/Bearer\\s+\\S+/gi, 'Bearer [x]').slice(0, 250);\nconst out = [];\n$input.all().forEach((it, i) => {\n  const src = sent[(it.pairedItem && it.pairedItem.item !== undefined) ? it.pairedItem.item : i];\n  const id = src && src.json ? src.json.id : null;\n  const j = it.json || {};\n  const status = Number(j.statusCode);\n  const body = j.body && typeof j.body === 'object' ? j.body : {};\n  const err = body.error || {};\n  const code = String(err.code !== undefined ? err.code : '');\n  let outcome, ec = code || String(status || ''), text = mask(err.message || (j.error && (j.error.message || j.error)) || '');\n  let pid = null;\n  if (!status) { outcome = 'RETRY'; ec = 'NETWORK'; text = mask(j.error && (j.error.message || j.error.description) || 'no response (timeout/network)'); }\n  else if (status >= 200 && status < 300) {\n    pid = body.messages && body.messages[0] && body.messages[0].id;\n    if (pid) outcome = 'SENT'; else { outcome = 'PERMANENT'; ec = 'BAD_PROVIDER_RESPONSE'; text = 'success status without message id'; }\n  }\n  else if (status === 401 || code === '190') { outcome = 'AUTH'; ec = 'AUTH'; }\n  else if (code === '131047' || code === '131051') { outcome = 'BLOCKED_WINDOW'; }\n  else if (status === 429 || status === 408 || status >= 500 || ['130429', '131056', '80007', '131000', '133016'].includes(code)) { outcome = 'RETRY'; }\n  else if (status === 400 && (code === '100' || code === '131009') && src && src.json.body && src.json.body.type === 'interactive') { outcome = 'RETRY'; ec = 'INTERACTIVE_REJECTED'; }\n  else { outcome = 'PERMANENT'; }\n  out.push({ json: { id, outcome, code: ec, text, provider_id: pid || null } });\n});\nreturn out;\n"
+      },
+      "id": "2eea2fcc-9de1-5ed4-a17e-83a7fd2bd829",
+      "name": "Classify Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bakery.fn_outbox_record($1::bigint, $2::text, $3::text, $4::text, $5::text) AS r",
+        "options": {
+          "queryReplacement": "={{ [ $json.id, $json.outcome, $json.code, $json.text, $json.provider_id ] }}"
+        }
+      },
+      "id": "cef988e4-ed9c-565e-b42f-883abb3f90a1",
+      "name": "Record Result",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2760,
+        240
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "content": "**Workflow D: outbox dispatcher + staff status API**\nSends every queued WhatsApp message (customer replies, order confirmations, bakery alerts). Orders are already committed before anything is sent.\nStaff API: POST /webhook/bakery-order-status  header per credential 'Bakery Staff Webhook Key'\nbody {\"order_ref\":\"BK-...\",\"status\":\"PREPARING\"} or {\"order_ref\":\"BK-...\",\"payment_status\":\"PAID\",\"actor\":\"name\"}\nRequires n8n env: META_PHONE_NUMBER_ID, WHATSAPP_API_VERSION (e.g. v21.0 - check Meta docs for a currently supported version).\nCredentials: 'Bakery Postgres', 'WhatsApp Cloud Bearer' (Header Auth: Authorization = Bearer <token>), 'Bakery Staff Webhook Key'.",
+        "height": 300,
+        "width": 640
+      },
+      "id": "7b48e2ed-5a09-51c0-bdb9-d1f90b583ef5",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -220
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Dispatch Now (called by C)": {
+      "main": [
+        [
+          {
+            "node": "Load Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Minute (safety net)": {
+      "main": [
+        [
+          {
+            "node": "Load Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Staff Status Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Staff Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Staff Request": {
+      "main": [
+        [
+          {
+            "node": "Staff Request Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Staff Request Valid?": {
+      "main": [
+        [
+          {
+            "node": "Apply Order Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Staff Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Order Update": {
+      "main": [
+        [
+          {
+            "node": "Respond Staff Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Staff Result": {
+      "main": [
+        [
+          {
+            "node": "Load Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Settings": {
+      "main": [
+        [
+          {
+            "node": "Claim Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Batch": {
+      "main": [
+        [
+          {
+            "node": "Render Outbox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Outbox": {
+      "main": [
+        [
+          {
+            "node": "Can Send?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can Send?": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Classify Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Result": {
+      "main": [
+        [
+          {
+            "node": "Record Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true
+  },
+  "tags": []
+}

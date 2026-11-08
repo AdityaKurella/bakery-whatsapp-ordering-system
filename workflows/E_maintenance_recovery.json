@@ -1,0 +1,323 @@
+{
+  "name": "E - Scheduled Maintenance and Recovery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "f817710c-6ca8-5c66-9162-0f1e4f0c5976",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT bakery.fn_maintenance() AS r",
+        "options": {}
+      },
+      "id": "0d965fc3-6ccf-5704-91af-a00f01a7693b",
+      "name": "Run Maintenance",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        260,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow E - one item per inbound event that needs replay (stale PENDING/PROCESSING, attempts below the limit).\nconst r = ($input.first().json || {}).r || {};\nreturn (Array.isArray(r.replay_event_ids) ? r.replay_event_ids : []).filter(n => Number.isInteger(n)).map(n => ({ json: { event_id: n } }));\n"
+      },
+      "id": "5e62812f-4df9-5700-9d27-6273bd287182",
+      "name": "Replay IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_WITH_WORKFLOW_C_ID"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "3c5f1d9e-0134-5de7-990b-db1fff257d51",
+      "name": "Replay Event (Workflow C)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        780,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3b6b7dc1-8e21-55fa-80e6-f28ed223adf8",
+              "leftValue": "={{ $json.r.alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "87a92baa-9ed4-55b2-94df-6882127691ca",
+      "name": "Alert Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflows E/F - alert payload compatible with Slack (\"text\") and Discord (\"content\") incoming webhooks.\nconst r = ($input.first().json || {}).r || {};\nconst text = String(r.alert_text || 'Bakery system alert').slice(0, 1500);\nreturn [{ json: { has_url: !!String($env.ALERT_WEBHOOK_URL || ''), payload: { text, content: text } } }];\n"
+      },
+      "id": "d733c0ce-33ec-5467-8646-d77814bcf038",
+      "name": "Build Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0501702c-42a1-5762-b623-8ce43f0c0ce8",
+              "leftValue": "={{ $json.has_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3ee0e1d6-3bb7-5227-b8b2-1515b511f22a",
+      "name": "Alert URL Set?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1040,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "37c68b06-0845-509d-8289-d8f4f5627545",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "431f41f1-3fce-5e98-9bf6-46e38768eb9b",
+      "name": "Manual: List Dead Letters",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM bakery.v_dead_letters ORDER BY created_at LIMIT 100",
+        "options": {}
+      },
+      "id": "6a4b186c-8ea5-5997-a6ac-da1612b7ca0a",
+      "name": "Query Dead Letters",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        260,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "**Workflow E: maintenance**\nEvery 5 min: expire abandoned carts, unstick outbox rows, replay stale inbound events (max attempts then dead-letter), apply retention, raise de-duplicated alerts. A failing database makes this workflow fail -> error workflow F alerts.\nManual branch lists dead letters. Replay with SQL: SELECT bakery.fn_replay_dead_event(<id>); SELECT bakery.fn_requeue_outbox(<id>);\nSET 'Replay Event' to Workflow C (REPLACE_WITH_WORKFLOW_C_ID). Optional env: ALERT_WEBHOOK_URL.",
+        "height": 240,
+        "width": 640
+      },
+      "id": "c418c0e2-544e-5a5e-b582-f870ffd307d0",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -200
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Run Maintenance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Maintenance": {
+      "main": [
+        [
+          {
+            "node": "Replay IDs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay IDs": {
+      "main": [
+        [
+          {
+            "node": "Replay Event (Workflow C)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Needed?": {
+      "main": [
+        [
+          {
+            "node": "Build Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Alert": {
+      "main": [
+        [
+          {
+            "node": "Alert URL Set?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert URL Set?": {
+      "main": [
+        [
+          {
+            "node": "Send Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual: List Dead Letters": {
+      "main": [
+        [
+          {
+            "node": "Query Dead Letters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true
+  },
+  "tags": []
+}

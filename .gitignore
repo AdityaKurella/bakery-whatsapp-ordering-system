@@ -1,0 +1,18 @@
+# Secrets and local state
+.env
+.env.*
+!.env.example
+*.dump
+*.dump.*
+*.log
+*.pem
+*.key
+
+# Runtime and editor artifacts
+node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

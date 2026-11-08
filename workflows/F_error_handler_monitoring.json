@@ -1,0 +1,173 @@
+{
+  "name": "F - Error Handler and Monitoring",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "19561368-4041-596d-8844-82706d935282",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow F - classify and redact the failure. No payloads, tokens or phone numbers leave this node.\nconst e = $input.first().json || {};\nconst ex = e.execution || {}, wf = e.workflow || {};\nconst redact = (s) => String(s == null ? '' : s)\n  .replace(/Bearer\\s+[A-Za-z0-9._\\-~+\\/=]+/gi, 'Bearer [redacted]')\n  .replace(/\\bEA[A-Za-z0-9]{20,}\\b/g, '[token]').replace(/\\bsk-[A-Za-z0-9_\\-]{16,}\\b/g, '[key]')\n  .replace(/sha256=[a-f0-9]{16,}/gi, 'sha256=[redacted]')\n  .replace(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/g, '[email]').replace(/\\+?\\d[\\d\\s-]{7,}\\d/g, '[number]');\nconst rawMsg = String(ex.error && ex.error.message ? ex.error.message : '');\nconst ref = (rawMsg.match(/BK-\\d{6}-\\d{5}-[A-Z0-9]{3}/) || [null])[0];   // order refs are correlation IDs, not personal data; extract before redacting\nconst msg = redact(rawMsg).slice(0, 400);\nconst PERM = /\\b(400|401|403|404|422)\\b|invalid|unauthori[sz]ed|forbidden|violates|constraint|malformed|syntax|not found|credentials|permission denied|REPLACE_WITH/i;\nconst TRANS = /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|timed? ?out|\\b429\\b|\\b5\\d\\d\\b|temporar|deadlock|too many connections|connection terminated|could not connect/i;\nconst classification = PERM.test(msg) ? 'PERMANENT' : TRANS.test(msg) ? 'TRANSIENT' : 'UNKNOWN';\nconst policy = classification === 'TRANSIENT' ? 'Automatic: inbound events are replayed by Workflow E and notifications are retried with backoff by Workflow D; no action unless alerts repeat.'\n  : classification === 'PERMANENT' ? 'Manual: fix configuration/data, then replay (see README recovery section). It will NOT be retried automatically.'\n  : 'Inspect the execution; treat as manual until understood.';\nconst text = ['🚨 n8n failure (' + classification + ')', 'Workflow: ' + redact(wf.name) + ' | Execution: ' + redact(ex.id) + ' | Node: ' + redact(ex.lastNodeExecuted),\n  'Time: ' + new Date().toISOString(), 'Error: ' + msg, ref ? 'Order: ' + ref : '', 'Policy: ' + policy].filter(Boolean).join('\\n').slice(0, 1500);\nreturn [{ json: { workflow_name: redact(wf.name).slice(0, 100), execution_id: redact(ex.id).slice(0, 40), node_name: redact(ex.lastNodeExecuted).slice(0, 100), classification, message: msg, order_ref: ref,\n  has_url: !!String($env.ALERT_WEBHOOK_URL || ''), payload: { text, content: text } } }];\n"
+      },
+      "id": "0db6255f-1ef5-59a7-883e-b7bbc676c2e5",
+      "name": "Redact and Classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO bakery.error_log(workflow_name, execution_id, node_name, classification, message, order_ref) VALUES ($1, $2, $3, $4, $5, $6)",
+        "options": {
+          "queryReplacement": "={{ [ $json.workflow_name, $json.execution_id, $json.node_name, $json.classification, $json.message, $json.order_ref ] }}"
+        }
+      },
+      "id": "213c8799-ff61-5990-848a-0d573101f5f8",
+      "name": "Log Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        520,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Bakery Postgres"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "680b2e24-6677-5c7d-8f24-108b098a5e15",
+              "leftValue": "={{ $json.has_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1b371961-ca49-5377-b455-b18125392f74",
+      "name": "Alert URL Set?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "b1966866-f10d-50ec-83fd-c7551f6edf0b",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "**Workflow F: error handler**\nIn workflows A-E open Settings -> 'Error Workflow' and pick this workflow (do not set it on F itself).\nClassifies TRANSIENT / PERMANENT / UNKNOWN, redacts tokens and numbers, logs to bakery.error_log, alerts via ALERT_WEBHOOK_URL (Slack/Discord-compatible).\nIt does NOT re-run failed executions: recovery is data-driven (E replays events, D retries notifications with backoff). Permanent failures are never retried automatically.",
+        "height": 220,
+        "width": 600
+      },
+      "id": "dddd53e6-6286-5f24-aea3-242d4978d700",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -160
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Redact and Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redact and Classify": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert URL Set?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert URL Set?": {
+      "main": [
+        [
+          {
+            "node": "Send Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true
+  },
+  "tags": []
+}

@@ -1,0 +1,188 @@
+{
+  "name": "A - WhatsApp Webhook Verification (GET)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp-bakery",
+        "authentication": "none",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a2018717-8f10-5cd0-975b-2221e5299727",
+      "name": "Meta Verification GET",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "webhookId": "f7cc03cc-aa81-5072-a6d0-866837412038"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Workflow A - Check verification request. Fails closed: any error => 403 (Meta then shows the subscription as failed).\nconst q = $input.first().json.query || {};\nconst pick = (k) => (q['hub.' + k] !== undefined ? q['hub.' + k] : (q.hub && typeof q.hub === 'object' ? q.hub[k] : undefined));\nconst mode = String(pick('mode') === undefined ? '' : pick('mode'));\nconst token = String(pick('verify_token') === undefined ? '' : pick('verify_token'));\nconst challenge = String(pick('challenge') === undefined ? '' : pick('challenge'));\nconst expected = String($env.META_VERIFY_TOKEN || '');\nfunction safeEqual(a, b) {\n  if (!b || a.length !== b.length) return false;\n  let d = 0;\n  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return d === 0;\n}\nconst ok = mode === 'subscribe' && expected.length >= 16 && safeEqual(token, expected) && /^[A-Za-z0-9_-]{1,100}$/.test(challenge);\n// nothing from the request is logged or echoed except the validated challenge\nreturn [{ json: { ok, challenge: ok ? challenge : '' } }];\n"
+      },
+      "id": "ed592dd4-2545-56dc-b3bd-f115d3cd2979",
+      "name": "Check Verification Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0d444e44-b693-5b45-b10b-55869037cc40",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f29616e6-765f-5b76-b1da-18b206e743bd",
+      "name": "Verification OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.challenge }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "3c1273f3-53ba-5cf9-8e29-d8d1fd1be6de",
+      "name": "Respond Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        780,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": {
+          "responseCode": 403,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "49c33176-464c-574c-a547-e4d1dd796e82",
+      "name": "Respond Forbidden",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "**Workflow A: Meta GET verification**\nSame URL as Workflow B (different HTTP method).\nRequires n8n env: META_VERIFY_TOKEN (>=16 chars) and N8N_BLOCK_ENV_ACCESS_IN_NODE=false.\nMeta callback URL (production): https://YOUR-HOST/webhook/whatsapp-bakery\nTest URL (editor 'Listen'): /webhook-test/whatsapp-bakery\nActivate only after README step 7.",
+        "height": 240,
+        "width": 420
+      },
+      "id": "8c65b5f9-52c4-5c74-8d3b-d2c29b103a22",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -120
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Meta Verification GET": {
+      "main": [
+        [
+          {
+            "node": "Check Verification Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Verification Request": {
+      "main": [
+        [
+          {
+            "node": "Verification OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verification OK?": {
+      "main": [
+        [
+          {
+            "node": "Respond Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Forbidden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true
+  },
+  "tags": []
+}
