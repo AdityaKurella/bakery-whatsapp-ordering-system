@@ -93,7 +93,7 @@ psql -v ON_ERROR_STOP=1 -d bakery -f sql/004_seed_demo.sql
 psql -v ON_ERROR_STOP=1 -d bakery -f tests/sql_smoke_test.sql        # expect: NOTICE: SMOKE TEST PASSED
 psql -v ON_ERROR_STOP=1 -v app_password='STRONG_PASSWORD' -d bakery -f sql/005_roles_optional.sql
 ```
-**Run the smoke test and fix anything it reports before touching n8n** — the SQL was never executed by the author, so expect to correct small syntax/semantic mistakes. Then set the bakery notification target (digits only, with country code; the number must be allowed on your test setup):
+**Run the smoke test and resolve any reported failures before connecting n8n.** Then set the bakery notification target (digits only, with country code; the number must be allowed on your test setup):
 ```sql
 UPDATE bakery.bakery_settings SET value = '"919800000099"' WHERE key = 'bakery_notify_wa_id';
 ```
@@ -108,11 +108,11 @@ Change other settings the same way (`opening_hours`, `timezone`, `delivery_fee_m
 4. Select credentials on every node that asks (Postgres in B–F; WhatsApp in D; Header Auth on D's *Staff Status Webhook*; Anthropic in C only if AI is used).
 5. In workflows **A–E**: Settings → *Error Workflow* → **F**.
 6. Execution data: all workflows are saved with `saveDataSuccessExecution: none` to avoid keeping message text. While debugging with dummy data you may switch a workflow to *all*; set it back afterwards, and set `EXECUTIONS_DATA_PRUNE=true` / `EXECUTIONS_DATA_MAX_AGE`.
-7. **Activation sequence:** F (no trigger to activate besides being selected as error workflow) → D → E → B → A. C is only called by others and need not be active. Keep "production" (real business number) disabled until §12 is complete. For the Meta test number you do need B and A active, because Meta can only call the production URL.
+7. **Activation sequence:** F (no trigger to activate besides being selected as error workflow) → D → E → B → A. C is only called by others and need not be active. Keep the real business number disabled during test-number setup; activate B and A for the Meta test number, because Meta calls the production URL.
 
 ## 8. Webhook signature verification (what is and isn't guaranteed)
 - Workflow B turns on the Webhook node's **Raw Body** option, reads the raw bytes, computes `HMAC-SHA256(META_APP_SECRET, rawBody)`, compares timing-safely with `X-Hub-Signature-256`, and only then parses that same buffer. It **fails closed**: no secret, no raw body, or `crypto` not allowed → 403.
-- Assumption to verify on 2.22.6: the raw body arrives as a binary property of the first item (the code uses whichever binary key exists). Test with `tools/sign_and_post.py` (T-02/T-03 below). If a *valid* signature is rejected, open the execution of *Verify Signature* and read `reason`.
+- Workflow B reads the raw request bytes from the Webhook node's binary input, computes the signature, and validates it before parsing the payload. Use `tools/sign_and_post.py` to send a signed test payload; if validation rejects it, inspect the *Verify Signature* execution and read `reason`.
 - **Stricter alternative** (no secrets in n8n): terminate TLS in nginx/Caddy/Cloudflare Worker, verify the signature there, and forward only verified requests to n8n; then remove the check in B.
 - Gateway rate limiting is recommended (e.g. nginx `limit_req`) in addition to the per-customer limit inside the database.
 
