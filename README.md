@@ -1,5 +1,46 @@
 # Bakery WhatsApp Ordering System — n8n 2.22.6 + PostgreSQL
 
+A database-backed WhatsApp ordering automation for a bakery, built with six n8n workflows and PostgreSQL. It demonstrates transactional order handling, webhook signature verification, idempotent event processing, AI-assisted intent classification with deterministic rules first, and an outbound notification outbox with retry/recovery.
+
+## Recruiter overview
+
+| Area | Implementation |
+|---|---|
+| Workflow orchestration | n8n 2.22.6 |
+| Transactional state and order logic | PostgreSQL / PL/pgSQL |
+| Messaging integration | Meta WhatsApp Cloud API |
+| Workflow modules | 6 workflows, 62 nodes |
+| Database | 15 tables, constraints, indexes, and triggers |
+| JavaScript modules | 13 Code-node source modules |
+| Automated local checks | 179 JavaScript assertions; SQL smoke test included but must be run against a configured database |
+
+## Architecture at a glance
+
+```mermaid
+flowchart TD
+  A[Meta WhatsApp Cloud API] --> B[Webhook intake and HMAC verification]
+  B --> C[Persist event and acknowledge]
+  C --> D[Conversation engine]
+  D <--> E[(PostgreSQL state, cart, orders)]
+  D --> F[Notification outbox]
+  F --> G[Dispatcher and retry handling]
+  G --> A
+  H[Maintenance and recovery] --> C
+  H --> F
+  I[Central error handling] -.-> B
+  I -.-> D
+  I -.-> G
+```
+
+## Evidence and limits
+
+- The repository documents 179 passing JavaScript behavior assertions and static validation.
+- A PostgreSQL smoke-test script with 54 expectations is included; run it against your own configured PostgreSQL database.
+- Live n8n import/execution, PostgreSQL migration execution, and Meta provider delivery are **not claimed as completed** by this README.
+- Outbound delivery is at-least-once; a send/record crash window can cause a duplicate notification, while the documented database transaction protects order-state effects.
+
+---
+
 WhatsApp bakery ordering automation built with six n8n workflows and PostgreSQL. The repository includes SQL migrations, JavaScript Code-node sources, sample webhook payloads, static validation, and unit tests. Local validation passes, including 179 JavaScript behavior assertions.
 
 ---
